@@ -1,10 +1,16 @@
 import * as vscode from 'vscode';
-import { execSync, exec, ChildProcess } from 'child_process';
+const child_process = require("child_process");
+const fs = require("fs");
 
+const CONFIG_PATH = process.env.HOME + "/.config/vscode-mediapanel.json";
+
+const displayNowPlayingNotification = false;
 const volumeStep = 3;
 const maxTitleLength = -1;
 const statusBarHeight = 50;
 const updateInternal = 0.25 * 1000;
+
+let config: any = {};
 
 let mediaItem: vscode.StatusBarItem;
 let volumeItem: vscode.StatusBarItem;
@@ -19,13 +25,17 @@ let skipNotification = false;
 let unmutedVolume: Number = 0;
 let currentTitleScroll = 0;
 let windowPID: string | null = null;
-let scrollEventMonitor: ChildProcess | null = null;
+let scrollEventMonitor: any = null;
 
 const notify = vscode.window.showInformationMessage;
 
 export function activate({ subscriptions }: vscode.ExtensionContext) {
 	
-	
+	loadConfig();
+
+	const mediaCommandId = "mediaItem.mediaClicked"
+	subscriptions.push(vscode.commands.registerCommand(mediaCommandId, onMediaItemClicked));
+
 	const volumeCommandId = "mediaItem.volumeClicked"
 	subscriptions.push(vscode.commands.registerCommand(volumeCommandId, onVolumeItemClicked));
 	
@@ -59,6 +69,7 @@ export function activate({ subscriptions }: vscode.ExtensionContext) {
 	previousItem.show();
 	
 	mediaItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, alignment++);
+	mediaItem.command = mediaCommandId;
 	mediaItem.show();
 	
 	soundBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, alignment++);
@@ -66,7 +77,7 @@ export function activate({ subscriptions }: vscode.ExtensionContext) {
 	
 	if (vscode.window.state.focused) {
 		windowPID = getFocusedWindowPID();
-		scrollEventMonitor = exec(`xev -id ${windowPID}`);
+		scrollEventMonitor = child_process.exec(`xev -id ${windowPID}`);
 		scrollEventMonitor.stdout?.on('data', onScrollMonitorSTDOUT);
 	}
 	else {
@@ -85,7 +96,22 @@ function mainLoop() {
 }
 
 function cmd(command: string): string {
-	return execSync(command).toString().trim();
+	return child_process.execSync(command).toString().trim();
+}
+
+function loadConfig(): void {
+	fs.exists(CONFIG_PATH, (exists: boolean) => {
+		if (exists) {
+			fs.readFile(CONFIG_PATH, {encoding:'utf8', flag:'r'}, (err: any, data: any) =>  {
+				if (err) throw err;
+				config = JSON.parse(data);
+			})
+		}
+	})
+}
+
+function saveConfig(): void {
+	fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
 }
 
 function getVolumeData(): string {
@@ -103,7 +129,7 @@ function onWindowStateChanged() {
 	
 	if (vscode.window.state.focused) {
 		windowPID = getFocusedWindowPID();
-		scrollEventMonitor = exec(`xev -id ${windowPID}`);
+		scrollEventMonitor = child_process.exec(`xev -id ${windowPID}`);
 		scrollEventMonitor.stdout?.on('data', onScrollMonitorSTDOUT);
 	}
 }
@@ -224,25 +250,27 @@ function updateItems(): void {
 		previousItem.hide();
 	}
 	else {
+		const title: string = getReadableMediaName(mediaName);
+
 		if (playingMedia != "" && playingMedia != mediaName) {
 			if (skipNotification)
 				skipNotification = false;
-			else
-				notify("Now playing: " + mediaName);
+			else if (displayNowPlayingNotification)
+				notify("Now playing: " + title);
 			currentTitleScroll = 0;
 		}
 		
-		if (maxTitleLength > 0 && mediaName.length > maxTitleLength) {
-			mediaItem.text = mediaName.slice(currentTitleScroll, Math.min(currentTitleScroll + maxTitleLength, mediaName.length));
+		if (maxTitleLength > 0 && title.length > maxTitleLength) {
+			mediaItem.text = title.slice(currentTitleScroll, Math.min(currentTitleScroll + maxTitleLength, title.length));
 			
 			if (mediaItem.text.length < maxTitleLength) {
-				mediaItem.text += "   | " + mediaName.slice(0, maxTitleLength - mediaItem.text.length);
+				mediaItem.text += "   | " + title.slice(0, maxTitleLength - mediaItem.text.length);
 			}
 			
-			currentTitleScroll = (currentTitleScroll + 1) % mediaName.length;
+			currentTitleScroll = (currentTitleScroll + 1) % title.length;
 		}
 		else {
-			mediaItem.text = mediaName;
+			mediaItem.text = title;
 		}
 		
 		playingMedia = mediaName;
@@ -265,8 +293,62 @@ function updateItems(): void {
 		volumeItem.text = `$(${icon})  ${volume}`;
 	}
 
-	// Update control items
 	controlItem.text = `$(${paused ? "play" : "debug-pause"})`;
+}
+
+function onMediaItemClicked(): void {
+	
+	if (playingMedia == null) {
+		return;
+	}
+
+	const actions: Map<string, Function> = new Map();
+	actions.set("Override title", overrideSongTitle);
+
+	if ("title_replacements" in config && playingMedia in config.title_replacements) {
+		actions.set("Clear title override", () => {
+			if ("title_replacements" in config && playingMedia! in config.title_replacements) {
+				delete config.title_replacements[playingMedia!];
+			}
+			saveConfig();
+		});
+	}
+	
+	actions.set("Reload config", () => {
+		loadConfig();
+	})
+	actions.set("Open config", () => {
+		const openPath = vscode.Uri.file(CONFIG_PATH);
+		vscode.workspace.openTextDocument(openPath).then(doc => {
+			vscode.window.showTextDocument(doc);
+		});
+	})
+
+	notify("Original title: " + playingMedia, ...actions.keys()).then(action => {
+		actions.get(action!)!();
+	});
+}
+
+function overrideSongTitle(): void {
+
+	if (playingMedia == null) {
+		return;
+	}
+
+	vscode.window.showInputBox({
+		title: "Input the title to replace '" + playingMedia + "'"
+	}).then(input => {
+		if (input === undefined) {
+			return;
+		}
+		
+		if (!("title_replacements" in config)) {
+			config.title_replacements = {};
+		}
+
+		config.title_replacements[playingMedia!] = input;
+		saveConfig()
+	})
 }
 
 function onVolumeItemClicked(): void {
@@ -328,23 +410,32 @@ function removeSuffix(text: string, suffix: string): string {
 	return text;
 }
 
+function getReadableMediaName(name: string): string {
+	if ("title_replacements" in config && name in config.title_replacements) {
+		return config.title_replacements[name].trim();
+	}
+
+	if ("substring_replacements" in config) {
+		for (var key of Object.keys(config.substring_replacements)) {
+			name = name.replace(key, config.substring_replacements[key]);
+		}
+	}
+	
+	return name.trim();
+}
+
 function formatMediaName(name: string): string {
 	name = removePrefix(name, "\"");	
 	name = removeSuffix(name, "\"");
-	name = removePrefix(name, "【歌ってみた】");
 	name = name.replace("_", " ");
 	name = name.replace("  ", " ");
 
-	[" - YouTube", " - mpv"].forEach(suffix => {
-		name = removeSuffix(name, suffix);
-	});
-	
 	const extensionIndex = name.lastIndexOf(".");
 	const extension = name.slice(extensionIndex + 1);
 	if (!extension.includes(" ")) {
 		name = name.slice(0, extensionIndex);
 	}
-	
+
 	return name.trim();
 }
 

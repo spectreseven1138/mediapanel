@@ -1,16 +1,19 @@
 {
 	"name": "mediapanel",
 	"displayName": "MediaPanel",
-	"description": "Displays the name of the playing media, buttons for controlling playback, and a volume indicator (which toggles mute when clicked). In addition, increases/decreases system volume when scrolling the status (bottom) bar. Notice: very hacky.",
+	"description": "Displays the name of the playing media, buttons for controlling playback, and a volume indicator (which toggles mute when clicked).\nIn addition, increases/decreases system volume when scrolling the status (bottom) bar. Notice: very hacky.",
 	"version": "1.0.0",
+	"author": "spectreseven1138",
+	"publisher": "spectreseven1138",
 	"engines": {
 		"vscode": "^1.67.0"
 	},
+	"repository": "https://github.com/spectreseven1138/mediapanel",
 	"categories": [
 		"Other"
 	],
 	"activationEvents": [
-		"*"
+		"onStartupFinished"
 	],
 	"main": "./out/extension.js",
 	"scripts": {
