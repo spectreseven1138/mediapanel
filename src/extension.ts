@@ -240,6 +240,25 @@ function updateItems(): void {
 		}
 
 		if (key == "media.name") {
+			if ("keyword_blacklist" in config) {
+				let blacklisted = false;
+				const lower_name = value.toLowerCase();
+
+				for (var j = 0; j < config.keyword_blacklist.length; j++) {
+					if (lower_name.includes(config.keyword_blacklist[j].toLowerCase())) {
+						blacklisted = true;
+						break;
+					}
+				}
+
+				if (blacklisted) {
+					mediaName = null;
+					running = false;
+					playerName = "";
+					continue;
+				}
+			}
+			
 			mediaName = formatMediaName(value);
 			paused = false;
 		}	
@@ -346,6 +365,25 @@ function onMediaItemClicked(): void {
 		config.artist_blacklist.push(artist);
 		saveConfig();
 	});
+
+	actions.set("Blacklist keyword", () => {
+		vscode.window.showInputBox({
+			placeHolder: "Input the keyword to blacklist"
+		}).then(input => {
+			if (input === undefined) {
+				return;
+			}
+			
+			if (!("keyword_blacklist" in config)) {
+				config.keyword_blacklist = [input];
+			}
+			else {
+				config.keyword_blacklist.push(input);
+			}
+	
+			saveConfig()
+		})
+	});
 	
 	actions.set("Reload config", () => {
 		loadConfig();
@@ -377,7 +415,7 @@ function overrideSongTitle(): void {
 	}
 
 	vscode.window.showInputBox({
-		title: "Input the title to replace '" + playingMedia + "'"
+		placeHolder: "Input the title to replace '" + playingMedia + "'"
 	}).then(input => {
 		if (input === undefined) {
 			return;
