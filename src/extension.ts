@@ -20,6 +20,7 @@ let previousItem: vscode.StatusBarItem;
 let soundBarItem: vscode.StatusBarItem;
 
 let playingMedia: string | null = "";
+let playerName: string = "";
 let paused: boolean = false;
 let skipNotification = false;
 let unmutedVolume: Number = 0;
@@ -208,8 +209,8 @@ function updateItems(): void {
 			continue;
     
 		const key = split[0];
-		const value = split[1].trim();
-    
+		const value = removeSuffix(removePrefix(split[1].trim(), "\""), "\"");
+
 		if (skip) {
 			if (key == "index")
 				skip = false;
@@ -233,13 +234,27 @@ function updateItems(): void {
 			}
 			continue;
 		}
-    
-		if (key == "index")
+
+		if (key == "index") {
 			break;
-    
+		}
+
 		if (key == "media.name") {
 			mediaName = formatMediaName(value);
 			paused = false;
+		}	
+		
+		if (key == "application.process.binary") {
+			if (("player_blacklist" in config && config.player_blacklist.includes(value)) || 
+				("artist_blacklist" in config && config.artist_blacklist.includes(cmd("playerctl metadata --format '{{ artist }}' --player=" + value)))
+			) {
+				mediaName = null;
+				running = false;
+				playerName = "";
+				continue;
+			}
+
+			playerName = value;
 		}
 	}
 	
@@ -302,7 +317,9 @@ function onMediaItemClicked(): void {
 		return;
 	}
 
+	const artist: string = cmd("playerctl metadata --format '{{ artist }}' --player=" + playerName);
 	const actions: Map<string, Function> = new Map();
+	
 	actions.set("Override title", overrideSongTitle);
 
 	if ("title_replacements" in config && playingMedia in config.title_replacements) {
@@ -313,10 +330,27 @@ function onMediaItemClicked(): void {
 			saveConfig();
 		});
 	}
+
+	actions.set("Blacklist player", () => {
+		if (!("player_blacklist" in config)) {
+			config.player_blacklist = [];
+		}
+		config.player_blacklist.push(playerName);
+		saveConfig();
+	});
+
+	actions.set("Blacklist artist", () => {
+		if (!("artist_blacklist" in config)) {
+			config.artist_blacklist = [];
+		}
+		config.artist_blacklist.push(artist);
+		saveConfig();
+	});
 	
 	actions.set("Reload config", () => {
 		loadConfig();
 	})
+	
 	actions.set("Open config", () => {
 		const openPath = vscode.Uri.file(CONFIG_PATH);
 		vscode.workspace.openTextDocument(openPath).then(doc => {
@@ -324,7 +358,14 @@ function onMediaItemClicked(): void {
 		});
 	})
 
-	notify("Original title: " + playingMedia, ...actions.keys()).then(action => {
+	notify(
+		getReadableMediaName(playingMedia) + "\n", 
+		{modal: true, detail: 
+			"Artist: " + artist
+			+ "\n" + "Player: " + playerName
+			+ "\n" + "Original title: " + playingMedia
+		}, 
+		...Array.from(actions.keys()).reverse()).then(action => {
 		actions.get(action!)!();
 	});
 }
@@ -376,18 +417,18 @@ function onVolumeItemClicked(): void {
 }
 
 function onControlItemClicked(): void {
-	cmd("playerctl play-pause")
+	cmd("playerctl play-pause --player=" + playerName)
 	updateItems();
 }
 
 function onNextItemClicked(): void {
-	cmd("playerctl next");
+	cmd("playerctl next --player=" + playerName);
 	skipNotification = true;
 	updateItems();
 }
 
 function onPreviousItemClicked(): void {
-	cmd("playerctl previous");
+	cmd("playerctl previous --player=" + playerName);
 	skipNotification = true;
 	updateItems();
 }
