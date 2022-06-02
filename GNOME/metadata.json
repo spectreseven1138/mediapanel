@@ -1,0 +1,10 @@
+{
+  "name": "Media Panel",
+  "description": "A simple status bar media panel with basic playback information and controls",
+  "shell-version": [
+    "42"
+  ],
+  "url": "https://github.com/spectreseven1138/mediapanel",
+  "uuid": "mediapanel@spectreseven1138.github.com",
+  "version": 1
+}

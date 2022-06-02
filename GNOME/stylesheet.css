@@ -1,0 +1,17 @@
+.playback-label {
+    padding: 0.5em;
+}
+
+.playback-button {
+    border-radius: 20px;
+    padding: 0.0em;
+    margin: 0.0em;
+}
+
+.playback-button:hover {
+    background-color: rgba(160, 160, 160, 0.2);
+}
+
+.playback-button:active {
+    background-color: rgba(160, 160, 160, 0.3);
+}

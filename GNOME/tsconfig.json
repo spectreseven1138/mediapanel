@@ -1,0 +1,35 @@
+{
+    "compileOnSave": true,
+    "compilerOptions": {
+        "lib": [
+            "es2019",
+            "es2017",
+            "dom"
+        ],
+        "target": "es2019",
+        "strict": true,
+        "outDir": "build",
+        "forceConsistentCasingInFileNames": true,
+        "downlevelIteration": true,
+        "pretty": true,
+        "sourceMap": true,
+        "declaration": true,
+        "removeComments": true,
+        "incremental": true,
+        "noUnusedLocals": true,
+        "noUnusedParameters": true,
+        "esModuleInterop": true,
+        "typeRoots": [
+            "./src/typing",
+            "./@types/Gjs",
+            "./@types/node-gtk"
+        ]
+    },
+    "include": [
+        "@types/Gjs/*.d.ts",
+        "src/*.ts",
+        // "src/typing/*.ts",
+        // "src/keybinders/*.ts",
+        // "src/platforms/*.ts"
+    ]
+}

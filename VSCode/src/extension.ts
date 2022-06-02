@@ -28,6 +28,7 @@ const notify = vscode.window.showInformationMessage;
 export function activate({ subscriptions }: vscode.ExtensionContext) {
 	
 	function loadFile(path: string): Promise<string> {
+		path = process.env.HOME + path;
 		return new Promise((resolve, reject) => {
 			fs.exists(path, (exists: boolean) => {
 				if (exists) {
@@ -46,7 +47,7 @@ export function activate({ subscriptions }: vscode.ExtensionContext) {
 	}
 
 	function saveFile(path: string, content: string): void {
-		fs.writeFileSync(path, content, "utf8");
+		fs.writeFileSync(process.env.HOME + path, content, "utf8");
 	}
 
 	api = new API.MediaAPI((command: Array<string>) => {
@@ -84,8 +85,8 @@ export function activate({ subscriptions }: vscode.ExtensionContext) {
 		}
 	}
 
-	api.setPausedCallback = (paused: boolean) => {
-		controlItem.text = `$(${paused ? "play" : "debug-pause"})`;
+	api.setPlayingCallback = (playing: boolean) => {
+		controlItem.text = `$(${playing ? "debug-pause" : "play"})`;
 	}
 
 	const mediaCommandId = "mediaItem.mediaClicked"
@@ -215,43 +216,54 @@ async function onScrollMonitorSTDOUT(data: string) {
 
 async function updateItems() {
 	let changed = await api.update();
+	if (changed) {
+		if (skipNotification) {
+			skipNotification = false;
+		}
+		else if (displayNowPlayingNotification && api.current_source) {
+			notify("Now playing: " + api.current_source.title);
+		}
+	}
 }
 
 function onMediaItemClicked() {
 	
-	if (api.playingMedia == null) {
+	if (api.current_source == null) {
 		return;
 	}
 
-	const artist: string = cmd("playerctl metadata --format '{{ artist }}' --player=" + api.playerName);
+	const artist: string = cmd("playerctl metadata --format '{{ artist }}' --player=" + api.current_source.player);
 	const actions: Map<string, Function> = new Map();
 	
 	actions.set("Override title", overrideSongTitle);
 
 	// TODO Move to API
-	if ("title_replacements" in api.config && api.playingMedia in api.config.title_replacements) {
+	if ("title_replacements" in api._config && api.current_source.title in api._config.title_replacements) {
 		actions.set("Clear title override", () => {
-			if ("title_replacements" in api.config && api.playingMedia! in api.config.title_replacements) {
-				delete api.config.title_replacements[api.playingMedia!];
+			if ("title_replacements" in api._config && api.current_source && api.current_source.title in api._config.title_replacements) {
+				delete api._config.title_replacements[api.current_source.title];
 			}
 			api.saveConfig();
+			api.onConfigChanged();
 		});
 	}
 
 	actions.set("Blacklist player", () => {
-		if (!("player_blacklist" in api.config)) {
-			api.config.player_blacklist = [];
+		if (!("player_blacklist" in api._config)) {
+			api._config.player_blacklist = [];
 		}
-		api.config.player_blacklist.push(api.playerName);
+		api._config.player_blacklist.push(api.current_source?.player);
 		api.saveConfig();
+		api.onConfigChanged();
 	});
 
 	actions.set("Blacklist artist", () => {
-		if (!("artist_blacklist" in api.config)) {
-			api.config.artist_blacklist = [];
+		if (!("artist_blacklist" in api._config)) {
+			api._config.artist_blacklist = [];
 		}
-		api.config.artist_blacklist.push(artist);
+		api._config.artist_blacklist.push(artist);
 		api.saveConfig();
+		api.onConfigChanged();
 	});
 
 	actions.set("Blacklist keyword", () => {
@@ -262,14 +274,15 @@ function onMediaItemClicked() {
 				return;
 			}
 			
-			if (!("keyword_blacklist" in api.config)) {
-				api.config.keyword_blacklist = [input];
+			if (!("keyword_blacklist" in api._config)) {
+				api._config.keyword_blacklist = [input];
 			}
 			else {
-				api.config.keyword_blacklist.push(input);
+				api._config.keyword_blacklist.push(input);
 			}
 	
 			api.saveConfig()
+			api.onConfigChanged();
 		})
 	});
 	
@@ -278,19 +291,27 @@ function onMediaItemClicked() {
 	})
 	
 	actions.set("Open config", async () => {
-		const openPath = vscode.Uri.file(await api.getConfigPath());
+		const openPath = vscode.Uri.file(process.env.HOME + api.getConfigPath());
 		vscode.workspace.openTextDocument(openPath).then((doc: any) => {
 			vscode.window.showTextDocument(doc);
 		});
 	})
 
+	actions.set("List sources", () => {
+		let detail: string = "";
+		api.sources.forEach((source: API.Source) => {
+			detail += "\n\n" + source.toString(api);
+		})
+		notify("Detected sources (excluding blacklisted):", {modal:true, detail: detail});
+	})
+
+	let detail: string =
+		"Artist: " + artist
+		+ "\n" + "Player: " + api.current_source.player
+		+ "\n" + "Original title: " + api.current_source.title;
+	
 	notify(
-		api.getReadableMediaName(api.playingMedia) + "\n", 
-		{modal: true, detail: 
-			"Artist: " + artist
-			+ "\n" + "Player: " + api.playerName
-			+ "\n" + "Original title: " + api.playingMedia
-		}, 
+		api.current_source.getReadableTitle(api) + "\n", {modal: true, detail: detail}, 
 		...Array.from(actions.keys()).reverse()).then((action: any) => {
 		actions.get(action!)!();
 	});
@@ -298,23 +319,25 @@ function onMediaItemClicked() {
 
 function overrideSongTitle(): void {
 
-	if (api.playingMedia == null) {
+	if (api.current_source == null) {
 		return;
 	}
 
 	vscode.window.showInputBox({
-		placeHolder: "Input the title to replace '" + api.playingMedia + "'"
+		placeHolder: "Input the title to replace '" + api.current_source.title + "'",
+		value: api.current_source.title
 	}).then((input: any) => {
-		if (input === undefined) {
+		if (input === undefined || api.current_source == null) {
 			return;
 		}
 		
-		if (!("title_replacements" in api.config)) {
-			api.config.title_replacements = {};
+		if (!("title_replacements" in api._config)) {
+			api._config.title_replacements = {};
 		}
 
-		api.config.title_replacements[api.playingMedia!] = input;
+		api._config.title_replacements[api.current_source.title] = input;
 		api.saveConfig()
+		api.onConfigChanged();
 	})
 }
 
