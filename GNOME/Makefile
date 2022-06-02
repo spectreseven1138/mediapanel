@@ -17,6 +17,7 @@ clean:
 	rm -rf build
 
 transpile: @types $(sources)
+	cp ../mediaAPI.ts src/
 	rm -rf build
 	tsc --skipLibCheck
 

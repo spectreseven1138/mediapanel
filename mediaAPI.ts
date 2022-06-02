@@ -31,6 +31,7 @@ export class MediaAPI {
     _cmd: (args: string[]) => Promise<string>;
     _load: (path: string) => Promise<string>;
     _save: (path: string, content: string) => void;
+    _log: ((msg: string) => void) | null;
 
     MAX_TITLE_LENGTH: number = -1;
     HIDE_DELAY: number = 1.0;
@@ -51,10 +52,11 @@ export class MediaAPI {
     setVolumeCallback: ((volume: number, muted: boolean) => void) | null = null;
     setPlayingCallback: ((playing: boolean) => void) | null = null;
 
-    constructor(cmd_function: (args: string[]) => Promise<string>, load_function: (path: string) => Promise<string>, save_function: (path: string, content: string) => void) {
+    constructor(cmd_function: (args: string[]) => Promise<string>, load_function: (path: string) => Promise<string>, save_function: (path: string, content: string) => void, log_function: ((msg: string) => void) | null) {
         this._cmd = cmd_function;
         this._load = load_function;
         this._save = save_function;
+        this._log = log_function;
     }
 
     getConfigPath() {
@@ -67,20 +69,43 @@ export class MediaAPI {
         this.beginHide();
     }
 
-    async loadConfig() {
+    log(msg: string) {
+        if (this._log) {
+            this._log(msg);
+        }
+    }
+
+    async loadConfig(message_callback: ((msg: string) => void) | null = null) {
         let original = this._config;
         try {
             this._config = JSON.parse(await this._load(this.getConfigPath()));
+            if (message_callback) {
+                message_callback(`Config file at '${this.getConfigPath()}' loaded successfully`);
+            }
         }
-        catch {
+        catch(err: any) {
             this._config = original == null ? {} : original;
+            if (message_callback) {
+                message_callback(err.toString());
+            }
         }
 
         this.onConfigChanged();
     }
 
-    async saveConfig() {
-        this._save(this.getConfigPath(), JSON.stringify(this._config, null, 2));
+    async saveConfig(message_callback: ((msg: string) => void) | null = null) {
+        try {
+            this._save(this.getConfigPath(), JSON.stringify(this._config, null, 2));
+            if (message_callback) {
+                message_callback(`Config file at '${this.getConfigPath()}' saved successfully`);
+            }
+        }
+        catch (err: any) {
+            if (message_callback) {
+                message_callback(err.toString());
+            }
+            throw err;
+        }
     }
 
     beginHide() {

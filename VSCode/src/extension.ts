@@ -54,7 +54,7 @@ export function activate({ subscriptions }: vscode.ExtensionContext) {
 		return new Promise((resolve, reject) => {
 			resolve(cmd(command.join(" ")));
 		});
-	}, loadFile, saveFile);
+	}, loadFile, saveFile, null);
 
 	api.setVisibleCallback = (visible: boolean) => {
 		if (visible) {

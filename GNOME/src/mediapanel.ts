@@ -64,7 +64,7 @@ export class Extension {
 
         let indicatorName = Me.metadata.name.replace(" ", "-");
 
-        this.api = new API.MediaAPI(cmd, load, save);
+        this.api = new API.MediaAPI(cmd, load, save, log);
         
         this.panel = new PanelMenu.Button(0.0, indicatorName, false);
         this.panel.setSensitive(false);
@@ -74,13 +74,40 @@ export class Extension {
         });
         this.panel.add_child(this.container);
 
+        let buttonMain = new St.Button();
+        buttonMain.y_align = Clutter.ActorAlign.CENTER;
+        buttonMain.x_align = Clutter.ActorAlign.CENTER;
+        this.container.add_child(buttonMain);
+
+        buttonMain.connect("button-release-event", (_obj, event) => {
+
+            // @ts-expect-error
+            let button: number = event.get_button();
+
+            // Left click
+            if (button == 1) {
+
+            }
+
+            // Right click
+            else if (button == 3) {
+                this.api?.loadConfig((msg: string) => {
+                    cmd(["notify-send", "MediaPanel", msg]);
+                });
+            }
+            
+            // Middle click
+            else if (button == 2) {
+                cmd(["code", API.removePrefix(this.api?.getConfigPath()!, "/")]);
+            }
+
+            return Clutter.EVENT_PROPAGATE;
+        });
+
         this.mainLabel = new St.Label({
-            text: "アイ情劣等生／かいりきベア【Kotone(天神子兎音)cover】",
             style_class: "playback-label"
         });
-        this.mainLabel.y_align = Clutter.ActorAlign.CENTER;
-        this.mainLabel.x_align = Clutter.ActorAlign.CENTER;
-        this.container.add_child(this.mainLabel);
+        buttonMain.set_child(this.mainLabel);
 
         // -------------------------------
         
