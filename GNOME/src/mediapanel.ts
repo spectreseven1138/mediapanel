@@ -9,18 +9,25 @@ const Clutter = imports.gi.Clutter;
 
 import * as API from "mediaAPI";
 
-function cmd(args: Array<string>): Promise<string> {
+function cmd(args: Array<string>, raise_error: boolean = true): Promise<[string, boolean]> {
     let proc = new Gio.Subprocess({
         argv: args,
-        flags: Gio.SubprocessFlags.STDOUT_PIPE
+        flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
     });
+    
     proc.init(null);
-    return new Promise((resolve, reject) => {
-        proc.communicate_utf8_async(null, null, (proc: any, res) => {
-            try {
-                resolve(proc.communicate_utf8_finish(res)[1]);
-            } catch (e: any) {
-                reject(e);
+
+    return new Promise((resolve) => {
+        proc.communicate_utf8_async(null, null, (source_object: any, res: Gio.AsyncResult) => {
+            let [, out, err] = source_object.communicate_utf8_finish(res);
+            if (proc.get_successful()) {
+                resolve([out.trim(), true]);
+            }
+            else if (raise_error) {
+                throw EvalError(err.trim());
+            }
+            else {
+                resolve([err.trim(), false]);
             }
         });
     });
@@ -58,6 +65,9 @@ export class Extension {
     buttonPlayPauseIcon: St.Icon | null = null;
     api: API.MediaAPI | null = null;
     loop: number = -1;
+
+    buttonNext: St.Button | null = null;
+    buttonPrevious: St.Button | null = null;
 
     enable() {
         log(`Enabling ${Me.metadata.name}`);
@@ -111,12 +121,12 @@ export class Extension {
 
         // -------------------------------
         
-        let buttonBack = new St.Button({
+        this.buttonPrevious = new St.Button({
             style_class: "playback-button"
         });
-        this.container.add_child(buttonBack);
+        this.container.add_child(this.buttonPrevious);
 
-        buttonBack.connect("button-release-event", () => {
+        this.buttonPrevious.connect("button-release-event", () => {
             this.api?.mediaBackward();
         });
 
@@ -124,7 +134,7 @@ export class Extension {
             gicon: new Gio.ThemedIcon({name: "media-skip-backward-symbolic"}),
             style_class: 'system-status-icon'
         });
-        buttonBack.set_child(icon);
+        this.buttonPrevious.set_child(icon);
 
         // -------------------------------
 
@@ -147,12 +157,12 @@ export class Extension {
         // -------------------------------
 
 
-        let buttonForward = new St.Button({
+        this.buttonNext = new St.Button({
             style_class: "playback-button"
         });
-        this.container.add_child(buttonForward);
+        this.container.add_child(this.buttonNext);
 
-        buttonForward.connect("button-release-event", () => {
+        this.buttonNext.connect("button-release-event", () => {
             this.api?.mediaForward();
         });
 
@@ -160,7 +170,7 @@ export class Extension {
             gicon: new Gio.ThemedIcon({name: "media-skip-forward-symbolic"}),
             style_class: 'system-status-icon'
         });
-        buttonForward.set_child(icon);
+        this.buttonNext.set_child(icon);
 
         Main.panel.addToStatusArea(indicatorName, this.panel, 0, "center");
 
@@ -176,6 +186,14 @@ export class Extension {
             visible ? this.container?.show() : this.container?.hide();
         }
 
+        this.api!.setCanGoNextCallback = (can_go: boolean) => {
+            can_go ? this.buttonNext?.show() : this.buttonNext?.hide();
+        }
+
+        this.api!.setCanGoPreviousCallback = (can_go: boolean) => {
+            can_go ? this.buttonPrevious?.show() : this.buttonPrevious?.hide();
+        }
+
         this.api!.setTitleCallback = (title: string) => {
             this.mainLabel?.set_text(title);
         }
@@ -183,6 +201,8 @@ export class Extension {
         this.api!.setPlayingCallback = (playing: boolean) => {
             this.buttonPlayPauseIcon?.set_gicon(new Gio.ThemedIcon({name: playing ? "media-playback-pause-symbolic" : "media-playback-start-symbolic"}))
         }
+
+        this.api!._log = log;
     }
 
     disable() {
@@ -198,6 +218,9 @@ export class Extension {
 
         log("Update");
         this.api?.update().then(null, (reason: Error) => {
+            log(reason.name);
+            log(reason.message);
+            log(reason.stack || "No stack provided");
             this.mainLabel?.set_text("ERR: " + reason.toString());
             throw reason;
         });

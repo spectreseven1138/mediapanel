@@ -27,8 +27,13 @@ export function getCurrentTime(): number {
     return new Date().getTime();
 }
 
+function matchRuleShort(text: string, match: string) {
+    var escapeRegex = (text: string) => text.replace(/([.*+?^=!:${}()|\[\]\/\\])/g, "\\$1");
+    return new RegExp("^" + match.split("*").map(escapeRegex).join(".*") + "$").test(text);
+}
+
 export class MediaAPI {
-    _cmd: (args: string[]) => Promise<string>;
+    _cmd: (args: string[], raise_error: boolean) => Promise<[string, boolean]>;
     _load: (path: string) => Promise<string>;
     _save: (path: string, content: string) => void;
     _log: ((msg: string) => void) | null;
@@ -48,11 +53,13 @@ export class MediaAPI {
     current_source: Source | null = null;
 
     setVisibleCallback: ((visible: boolean) => void) | null = null;
+    setCanGoNextCallback: ((can_go: boolean) => void) | null = null;
+    setCanGoPreviousCallback: ((can_go: boolean) => void) | null = null;
     setTitleCallback: ((title: string) => void) | null = null;
     setVolumeCallback: ((volume: number, muted: boolean) => void) | null = null;
     setPlayingCallback: ((playing: boolean) => void) | null = null;
 
-    constructor(cmd_function: (args: string[]) => Promise<string>, load_function: (path: string) => Promise<string>, save_function: (path: string, content: string) => void, log_function: ((msg: string) => void) | null) {
+    constructor(cmd_function: (args: string[], raise_error: boolean) => Promise<[string, boolean]>, load_function: (path: string) => Promise<string>, save_function: (path: string, content: string) => void, log_function: ((msg: string) => void) | null) {
         this._cmd = cmd_function;
         this._load = load_function;
         this._save = save_function;
@@ -73,6 +80,10 @@ export class MediaAPI {
         if (this._log) {
             this._log(msg);
         }
+    }
+
+    cmd(args: string[], raise_error: boolean = true) {
+        return this._cmd(args, raise_error);
     }
 
     async loadConfig(message_callback: ((msg: string) => void) | null = null) {
@@ -126,87 +137,55 @@ export class MediaAPI {
     }
 
     async _updateCurrentSource(): Promise<boolean> {
-
+        
         let new_sources: Source[] = [];
-        const data: string[] = (await this._cmd(["pacmd", "list-sink-inputs"])).split("\n");
-
+        const available_sources: string[] = (await this.cmd(["playerctl", "--list-all"]))[0].split("\n");
+        
         let current_exists = false;
 
-        let position = 0;
-        while (position < data.length) {
+        for (let source_id of available_sources) {
+            
+            if (source_id.trim().length == 0) {
+                continue;
+            }
 
-            let line: string;
-
-            while (position < data.length) {
-                line = data[position].trim();
-                if (line.startsWith("index:")) {
-                    break;
+            if ("source_blacklist" in this._config) {
+                let blacklisted = false;
+                for (let player of this._config.source_blacklist) {
+                    if (matchRuleShort(source_id, player)) {
+                        blacklisted = true;
+                        break;
+                    }
                 }
-                position++;
+                if (blacklisted) {
+                    continue;
+                }
             }
 
-            if (position >= data.length) {
-                break;
-            }
-
-            let index: number = Number(line!.slice(7));
             let existing_source: Source | null = null;
-
-            for (let i = 0; i < this.sources.length; i++) {
-                if (this.sources[i].index == index) {
-                    existing_source = this.sources[i];
+            for (const source of this.sources) {
+                if (source.id == source_id) {
+                    existing_source = source;
                     break;
                 }
             }
-
-            position++;
 
             if (existing_source) {
-
-                while (position < data.length) {
-                    line = data[position].trim();
-                    if (line.startsWith("state:")) {
-                        existing_source.playing = line.slice(7) == "RUNNING";
-                        break;
+                if (!existing_source.isTitleBlacklisted(this)) {
+                    new_sources.push(existing_source);
+                    if (existing_source == this.current_source) {
+                        current_exists = true;
                     }
-                    position++;
-                }
-
-                if (position >= data.length) {
-                    break;
-                }
-
-                while (position < data.length) {
-                    line = data[position].trim();
-                    if (line.startsWith("media.name")) {
-                        existing_source.title = line.slice(13);
-                        existing_source.formatTitle(this);
-
-                        if (!existing_source.isTitleBlacklisted(this)) {
-                            new_sources.push(existing_source);
-                            if (existing_source == this.current_source) {
-                                current_exists = true;
-                            }
-                        }
-
-                        break;
-                    }
-                    position++;
-                }
-
-                if (position >= data.length) {
-                    break;
                 }
             }
             else {
-                const [pos, source] = await Source.create(data, position, index, this);
-                position = pos;
+                const source: Source | null = await Source.create(source_id, this);
                 if (source) {
                     new_sources.push(source);
                 }
             }
         }
-        
+
         this.sources = new_sources;
 
         let changed = this.current_source != null;
@@ -226,7 +205,7 @@ export class MediaAPI {
         for (let i = 0; i < this.sources.length; i++) {
             let source: Source = this.sources[i];
             
-            if (!source.playing) {
+            if (await source.getStatus() != 2) {
                 continue;
             }
 
@@ -278,15 +257,25 @@ export class MediaAPI {
         }
 
         if (this.current_source == null) {
-            if (changed && this.setVisibleCallback) {
+            if (changed) {
                 this.beginHide();
             }
             this.processHide();
             return changed;
         }
 
+        this.current_source.updateMetadata();
+
+        if (this.setCanGoNextCallback) {
+            this.setCanGoNextCallback((await this.current_source.interact("Player.CanGoNext"))[0] == "true");
+        }
+
+        if (this.setCanGoPreviousCallback) {
+            this.setCanGoPreviousCallback((await this.current_source.interact("Player.CanGoPrevious"))[0] == "true");
+        }
+
         if (this.setPlayingCallback) {
-            this.setPlayingCallback(this.current_source.playing);
+            this.setPlayingCallback(await this.current_source.getStatus() == 2);
         }
 
         if (this.setTitleCallback) {
@@ -318,32 +307,32 @@ export class MediaAPI {
         return changed;
     }
 
-    async mediaForward(player: string | null = this.current_source?.player!) {
+    async mediaForward(player: string | null = this.current_source?.id!) {
         if (player) {
-            await this._cmd(["playerctl", "next", "--player=" + player]);
+            await this.cmd(["playerctl", "next", "--player=" + player]);
         }
         else {
-            await this._cmd(["playerctl", "next"]);
+            await this.cmd(["playerctl", "next"]);
         }
         this.update();
     }
 
-    async mediaBackward(player: string | null = this.current_source?.player!) {
+    async mediaBackward(player: string | null = this.current_source?.id!) {
         if (player) {
-            await this._cmd(["playerctl", "previous", "--player=" + player]);
+            await this.cmd(["playerctl", "previous", "--player=" + player]);
         }
         else {
-            await this._cmd(["playerctl", "previous"]);
+            await this.cmd(["playerctl", "previous"]);
         }
         this.update();
     }
 
-    async mediaPlayPause(player: string | null = this.current_source?.player!) {
+    async mediaPlayPause(player: string | null = this.current_source?.id!) {
         if (player) {
-            await this._cmd(["playerctl", "play-pause", "--player=" + player]);
+            await this.cmd(["playerctl", "play-pause", "--player=" + player]);
         }
         else {
-            await this._cmd(["playerctl", "play-pause"]);
+            await this.cmd(["playerctl", "play-pause"]);
         }
         this.update();
     }
@@ -351,9 +340,9 @@ export class MediaAPI {
     async getVolumeData(offset: number = 0): Promise<[number, boolean]> {
         let data: string;
         try {
-            data = await this._cmd(["amixer", "get", "Master", "|", "grep", "'Right: '"]);
+            data = (await this.cmd(["amixer", "get", "Master", "|", "grep", "'Right: '"]))[0];
         } catch {
-            data = await this._cmd(["amixer", "get", "Master", "|", "grep", "'Mono: '"]);
+            data = (await this.cmd(["amixer", "get", "Master", "|", "grep", "'Mono: '"]))[0];
         }
 
         let volume: number = Number(data.slice(data.indexOf("[") + 1, data.indexOf("]") - 1));
@@ -365,30 +354,106 @@ export class MediaAPI {
     }
 
     setVolume(value: number) {
-        return this._cmd(["amixer", "set", "Master", `${value}%`]);
+        return this.cmd(["amixer", "set", "Master", `${value}%`]);
     }
 }
 
+const SOURCE_METADATA_LIST_TYPES = [
+    "albumArtist", "artist", "comment", "composer", "genre", "lyricist"
+];
+
 export class Source {
 
-    title: string = "undefined";
-    player: string = "undefined";
-    playing: boolean = false;
-    index: number;
+    metadata: any = {
+        trackid: null,
+        length: null,
+        artUrl: null,
+        album: null,
+        albumArtist: null,
+        artist: null,
+        asText: null,
+        audioBPM: null,
+        autoRating: null,
+        comment: null,
+        composer: null,
+        contentCreated: null,
+        discNumber: null,
+        firstUsed: null,
+        genre: null,
+        lastUsed: null,
+        lyricist: null,
+        title: null,
+        trackNumber: null,
+        url: null,
+        useCount: null,
+        userRating: null,
+    };
+
     last_activity: number = -1;
 
-    api: any;
+    api: MediaAPI;
+    id: string;
+    
+    constructor(api: MediaAPI, id: string) {
+        this.api = api;
+        this.id = id;
 
-    constructor(index: number) {
-        this.index = index;
+        for (const key of Object.keys(this.metadata)) {
+            if (SOURCE_METADATA_LIST_TYPES.includes(key)) {
+                this.metadata[key] = [];
+            }
+        }
+    }
+
+    interact(key: string): Promise<[string, boolean]> {
+        return this.api.cmd(["qdbus", "org.mpris.MediaPlayer2." + this.id, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2." + key], false);
+    }
+
+    async getStatus(): Promise<number> {
+        switch ((await this.interact("Player.PlaybackStatus"))[0].trim()) {
+            case "Playing": return 2;
+            case "Paused": return 1;
+            default: return 0;
+        }
     }
 
     updateLastActivity() {
         this.last_activity = getCurrentTime();
     }
 
-    toString(api: MediaAPI | null = null): string {
-        let ret: string = `${this.title}\n - Playing: ${this.playing}\n - Last active: ${this.last_activity}\n - Index: ${this.index}`;
+    async updateMetadata(metadata: string | null = null) {
+
+        if (metadata == null) {
+            metadata = (await this.api.cmd(["playerctl", "metadata", "--player=" + this.id]))[0];
+        }
+
+        const source_data: string[] = (metadata).split("\n");
+        for (let line of source_data){
+            line = line.slice(this.id.length + 1, line.length).trim();
+            if (line.length == 0) {
+                continue;
+            }
+            
+            let key: string = line.split(" ", 2)[0];
+            const value: string = line.slice(key.length, line.length).trim();
+            key = key.split(":")[1];
+
+            if (!(key in this.metadata)) {
+                console.log("Unknown metadata key: " + key)
+                continue;
+            }
+
+            if (SOURCE_METADATA_LIST_TYPES.includes(key)) {
+                this.metadata[key].push(value);
+            }
+            else {
+                this.metadata[key] = value;
+            }
+        }
+    }
+
+    async toString(api: MediaAPI | null = null): Promise<string> {
+        let ret: string = `${this.metadata.title}\n - Status: ${["Stopped", "Paused", "Playing"][await this.getStatus()]}\n - Last active: ${this.last_activity}\n - ID: ${this.id}`;
         if (api) {
             ret += "\n - Current: " + (api.current_source == this).toString();
         }
@@ -396,17 +461,17 @@ export class Source {
     }
 
     async formatTitle(api: MediaAPI) {
-        if (this.player == "vlc" && this.title == "audio stream" && "dlna_command" in api._config) {
+        if (this.id == "vlc" && this.metadata.title == "audio stream" && "dlna_command" in api._config) {
 
-            let url: string = await api._cmd(["playerctl", "metadata", "--format", "\"{{ xeasam:url }}\""]);
+            let url: string = (await api.cmd(["playerctl", "metadata", "--format", "\"{{ xeasam:url }}\""]))[0];
 
             if (url in api.vlc_dlna_cache) {
-                this.title = api.vlc_dlna_cache[url];
+                this.metadata.title = api.vlc_dlna_cache[url];
             }
             else if (url.startsWith("http://")) {
                 let ip = removePrefix(url, "http://").split("/", 1)[0];
 
-                let available_servers = JSON.parse(await api._cmd([api._config.dlna_command, "list-servers"]));
+                let available_servers = JSON.parse((await api.cmd([api._config.dlna_command, "list-servers"]))[0]);
                 let server: string | null = null;
 
                 for (let i = 0; i < available_servers.length; i++) {
@@ -417,16 +482,16 @@ export class Source {
                 }
 
                 if (server != null) {
-                    let data = JSON.parse(await api._cmd([api._config.dlna_command, "search", "-s", server, "-sq", url, "-st", "path"]));
+                    let data = JSON.parse((await api.cmd([api._config.dlna_command, "search", "-s", server, "-sq", url, "-st", "path"]))[0]);
                     if (data.length > 0) {
-                        this.title = data[0].name;
+                        this.metadata.title = data[0].name;
                         api.vlc_dlna_cache[url] = data[0].name;
                     }
                 }
             }
         }
 
-        let title: string = this.title!;
+        let title: string = this.metadata.title!;
 
         title = removePrefix(title, "\"");	
         title = removeSuffix(title, "\"");
@@ -440,12 +505,12 @@ export class Source {
             title = title.slice(0, extensionIndex);
         }
 
-        this.title = title.trim();
+        this.metadata.title = title.trim();
     }
 
     isTitleBlacklisted(api: MediaAPI) {
         if ("keyword_blacklist" in api._config) {
-            const lower_name = this.title.toLowerCase();
+            const lower_name = this.metadata.title.toLowerCase();
             for (var j = 0; j < api._config.keyword_blacklist.length; j++) {
                 if (lower_name.includes(api._config.keyword_blacklist[j].toLowerCase())) {
                     return true;
@@ -456,86 +521,46 @@ export class Source {
     }
 
     getReadableTitle(api: MediaAPI): string {
-        if ("title_replacements" in api._config && this.title in api._config.title_replacements) {
-            return api._config.title_replacements[this.title].trim();
+        if ("title_replacements" in api._config && this.metadata.title in api._config.title_replacements) {
+            return api._config.title_replacements[this.metadata.title].trim();
         }
 
-        let ret: string = this.title;
+        let ret: string = this.metadata.title;
 
         if ("substring_replacements" in api._config) {
             for (var key of Object.keys(api._config.substring_replacements)) {
-                ret = ret.replace(key, api._config.substring_replacements[key]);
+                ret = replaceAll(ret, key, api._config.substring_replacements[key]);
             }
         }
-        
+
         return ret.trim();
     }
 
-    // Should be called when 'position' is on the line after the source's index
-    static async create(source_data: string[], position: number, index: number, api: MediaAPI): Promise<[number, Source | null]> {
-        
-        let source: Source = new Source(index);
-        source.api = api;
+    static async create(source_id: string, api: MediaAPI): Promise<Source | null> {
 
-        for (; position < source_data.length; position++) {
-            const line = source_data[position].trim();
-            let split: string[];
+        let source: Source = new Source(api, source_id);
 
-            if (line.includes(" = ")) {
-                split = line.split(" = ");
-            }
-            else {
-                split = line.split(": ");
-            }
+        const metadata: string = (await api.cmd(["playerctl", "metadata", "--player=" + source_id], false))[0];
+        if (metadata == "No player could handle this command") {
+            return null;
+        }
         
-            if (split.length == 1)
-                continue;
-        
-            const key = split[0];
-            const value = removeSuffix(removePrefix(split[1].trim(), "\""), "\"");
-        
-            if (key == "index") {
-                break;
-            }
+        await source.updateMetadata(metadata);
 
-            if (key == "driver") {
-                if (value != "<protocol-native.c>") {
-                    return [position + 1, null];
+        if ("artist_blacklist" in api._config) {
+            for (const artist of source.metadata.artist) {
+                for (const blacklisted_artist of api._config.artist_blacklist) {
+                    if (matchRuleShort(artist, blacklisted_artist)) {
+                        return null;
+                    }
                 }
-                continue;
-            }
-            
-            if (key == "state") {
-                source.playing = value == "RUNNING";
-                continue;
-            }
-
-            if (key == "media.name") {
-                source.title = value;
-                continue;
-            }	
-            
-            if (key == "application.process.binary") {
-                source.player = value;
-
-                if ("player_blacklist" in api._config && api._config.player_blacklist.includes(value)) {
-                    return [position + 1, null];
-                }
-
-                if ("artist_blacklist" in api._config && api._config.artist_blacklist.includes(await api._cmd(["playerctl", "metadata", "--format", "\"{{ artist }}\"", "--player=" + value]))) {
-                    return [position + 1, null];
-                }
-
-                continue;
             }
         }
-
-        source.formatTitle(api);
 
         if (source.isTitleBlacklisted(api)) {
-            return [position + 1, null];
+            return null;
         }
 
-        return [position, source];
+        return source;
     }
 }

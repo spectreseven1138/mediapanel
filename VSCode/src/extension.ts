@@ -25,7 +25,7 @@ let scrollEventMonitor: any = null;
 
 const notify = vscode.window.showInformationMessage;
 
-export function activate({ subscriptions }: vscode.ExtensionContext) {
+export async function activate({ subscriptions }: vscode.ExtensionContext) {
 	
 	function loadFile(path: string): Promise<string> {
 		path = process.env.HOME + path;
@@ -50,11 +50,7 @@ export function activate({ subscriptions }: vscode.ExtensionContext) {
 		fs.writeFileSync(process.env.HOME + path, content, "utf8");
 	}
 
-	api = new API.MediaAPI((command: Array<string>) => {
-		return new Promise((resolve, reject) => {
-			resolve(cmd(command.join(" ")));
-		});
-	}, loadFile, saveFile, null);
+	api = new API.MediaAPI(cmd, loadFile, saveFile, null);
 
 	api.setVisibleCallback = (visible: boolean) => {
 		if (visible) {
@@ -69,6 +65,14 @@ export function activate({ subscriptions }: vscode.ExtensionContext) {
 			nextItem.hide();
 			previousItem.hide();
 		}
+	}
+
+	api.setCanGoNextCallback = (can_go: boolean) => {
+		nextItem.text = can_go ? ">" : "";
+	}
+
+	api.setCanGoPreviousCallback = (can_go: boolean) => {
+		previousItem.text = can_go ? "<" : "";
 	}
 
 	api.setTitleCallback = (title: string) => {
@@ -88,6 +92,8 @@ export function activate({ subscriptions }: vscode.ExtensionContext) {
 	api.setPlayingCallback = (playing: boolean) => {
 		controlItem.text = `$(${playing ? "debug-pause" : "play"})`;
 	}
+
+	api._log = notify;
 
 	const mediaCommandId = "mediaItem.mediaClicked"
 	subscriptions.push(vscode.commands.registerCommand(mediaCommandId, onMediaItemClicked));
@@ -132,7 +138,7 @@ export function activate({ subscriptions }: vscode.ExtensionContext) {
 	soundBarItem.show();
 	
 	if (vscode.window.state.focused) {
-		windowPID = getFocusedWindowPID();
+		windowPID = await getFocusedWindowPID();
 		scrollEventMonitor = child_process.exec(`xev -id ${windowPID}`);
 		scrollEventMonitor.stdout?.on('data', onScrollMonitorSTDOUT);
 	}
@@ -151,17 +157,30 @@ function mainLoop() {
 	updateItems();
 }
 
-function cmd(command: string): string {
-	return child_process.execSync(command).toString().trim();
+function cmd(args: string[], raise_error: boolean = true): Promise<[string, boolean]> {
+	return new Promise((resolve) => {
+		child_process.exec(args.join(" "), (error: Error, stdout: string | Buffer, stderr: string | Buffer) => {
+			if (error) {
+				if (raise_error) {
+					throw EvalError(stderr.toString().trim());
+				}
+				else {
+					resolve([stderr.toString().trim(), false]);
+				}
+			}
+
+			resolve([stdout.toString().trim(), true]);
+		});
+	});
 }
 
-function onWindowStateChanged() {
+async function onWindowStateChanged() {
 	
 	if (windowPID != null)
 		return;
 	
 	if (vscode.window.state.focused) {
-		windowPID = getFocusedWindowPID();
+		windowPID = await getFocusedWindowPID();
 		scrollEventMonitor = child_process.exec(`xev -id ${windowPID}`);
 		scrollEventMonitor.stdout?.on('data', onScrollMonitorSTDOUT);
 	}
@@ -185,7 +204,7 @@ async function onScrollMonitorSTDOUT(data: string) {
 	}
 
 	// Get window geometry and mouse position data from xdotool
-	const windowData = cmd(`xdotool getwindowgeometry --shell ${windowPID} getmouselocation --shell`).split("\n");
+	const windowData = (await cmd(["xdotool", "getwindowgeometry", "--shell", windowPID, "getmouselocation", "--shell"]))[0].split("\n");
 	
 	// Check if the mouse is inside the statusbar
 	const windowY = Number(windowData[2].slice(2));
@@ -208,7 +227,7 @@ async function onScrollMonitorSTDOUT(data: string) {
 	let [volume] = await api.getVolumeData(volumeStep * (up ? 1 : -1));
 
 	// Apply increased / decreased volume
-	cmd(`amixer set Master ${volume}%`)
+	await cmd(["amixer", "set", "Master" ,`${volume}%`]);
 	
 	const icon = volume == 0 ? "mute" : "unmute";
 	volumeItem.text = `$(${icon})  ${volume}%`;
@@ -221,27 +240,27 @@ async function updateItems() {
 			skipNotification = false;
 		}
 		else if (displayNowPlayingNotification && api.current_source) {
-			notify("Now playing: " + api.current_source.title);
+			notify("Now playing: " + api.current_source.metadata.title);
 		}
 	}
 }
 
-function onMediaItemClicked() {
+async function onMediaItemClicked() {
 	
 	if (api.current_source == null) {
 		return;
 	}
 
-	const artist: string = cmd("playerctl metadata --format '{{ artist }}' --player=" + api.current_source.player);
+	const artist: string = (await cmd(["playerctl", "metadata", "--format", "'{{ artist }}'", "--player=" + api.current_source.id]))[0];
 	const actions: Map<string, Function> = new Map();
 	
 	actions.set("Override title", overrideSongTitle);
 
 	// TODO Move to API
-	if ("title_replacements" in api._config && api.current_source.title in api._config.title_replacements) {
+	if ("title_replacements" in api._config && api.current_source.metadata.title in api._config.title_replacements) {
 		actions.set("Clear title override", () => {
-			if ("title_replacements" in api._config && api.current_source && api.current_source.title in api._config.title_replacements) {
-				delete api._config.title_replacements[api.current_source.title];
+			if ("title_replacements" in api._config && api.current_source && api.current_source.metadata.title in api._config.title_replacements) {
+				delete api._config.title_replacements[api.current_source.metadata.title];
 			}
 			api.saveConfig();
 			api.onConfigChanged();
@@ -252,7 +271,7 @@ function onMediaItemClicked() {
 		if (!("player_blacklist" in api._config)) {
 			api._config.player_blacklist = [];
 		}
-		api._config.player_blacklist.push(api.current_source?.player);
+		api._config.player_blacklist.push(api.current_source?.id);
 		api.saveConfig();
 		api.onConfigChanged();
 	});
@@ -307,8 +326,8 @@ function onMediaItemClicked() {
 
 	let detail: string =
 		"Artist: " + artist
-		+ "\n" + "Player: " + api.current_source.player
-		+ "\n" + "Original title: " + api.current_source.title;
+		+ "\n" + "Player: " + api.current_source.id
+		+ "\n" + "Original title: " + api.current_source.metadata.title;
 	
 	notify(
 		api.current_source.getReadableTitle(api) + "\n", {modal: true, detail: detail}, 
@@ -324,8 +343,8 @@ function overrideSongTitle(): void {
 	}
 
 	vscode.window.showInputBox({
-		placeHolder: "Input the title to replace '" + api.current_source.title + "'",
-		value: api.current_source.title
+		placeHolder: "Input the title to replace '" + api.current_source.metadata.title + "'",
+		value: api.current_source.metadata.title
 	}).then((input: any) => {
 		if (input === undefined || api.current_source == null) {
 			return;
@@ -335,7 +354,7 @@ function overrideSongTitle(): void {
 			api._config.title_replacements = {};
 		}
 
-		api._config.title_replacements[api.current_source.title] = input;
+		api._config.title_replacements[api.current_source.metadata.title] = input;
 		api.saveConfig()
 		api.onConfigChanged();
 	})
@@ -380,6 +399,6 @@ async function onPreviousItemClicked() {
 	updateItems();
 }
 
-function getFocusedWindowPID(): string {
-	return cmd("xdotool getwindowfocus");
+async function getFocusedWindowPID(): Promise<string> {
+	return (await cmd(["xdotool", "getwindowfocus"]))[0];
 }
