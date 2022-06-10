@@ -521,11 +521,33 @@ export class Source {
     }
 
     getReadableTitle(api: MediaAPI): string {
-        if ("title_replacements" in api._config && this.metadata.title in api._config.title_replacements) {
-            return api._config.title_replacements[this.metadata.title].trim();
+        let ret: string = this.metadata.title;
+        
+        if ("title_replacements" in api._config && ret in api._config.title_replacements) {
+            return api._config.title_replacements[ret].trim();
         }
 
-        let ret: string = this.metadata.title;
+        if ("remove_brackets" in api._config) {
+            for (const pair of api._config.remove_brackets) {
+                let finished = false;
+                while (!finished) {
+                    const a = ret.indexOf(pair[0]);
+                    if (a < 0) {
+                        finished = true;
+                        break;
+                    }
+
+                    const b = ret.indexOf(pair[1]);
+                    if (b < 0) {
+                        finished = true;
+                        break;
+                    }
+
+                    const temp = ret;
+                    ret = temp.slice(0, a - 1) + temp.slice(b + pair[1].length, temp.length);
+                }
+            }
+        }
 
         if ("substring_replacements" in api._config) {
             for (var key of Object.keys(api._config.substring_replacements)) {

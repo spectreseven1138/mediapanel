@@ -1,5 +1,6 @@
 const St = imports.gi.St;
 const Gio = imports.gi.Gio;
+// const Gtk = imports.gi.Gtk;
 const GLib = imports.gi.GLib;
 const ExtensionUtils = imports.misc.extensionUtils;
 const Me = ExtensionUtils.getCurrentExtension();
@@ -59,7 +60,7 @@ export class Extension {
 
     update_interval: number = 1;
 
-    panel: typeof PanelMenu;
+    widget: typeof PanelMenu;
     container: St.BoxLayout | null = null;
     mainLabel: St.Label | null = null;
     buttonPlayPauseIcon: St.Icon | null = null;
@@ -69,20 +70,21 @@ export class Extension {
     buttonNext: St.Button | null = null;
     buttonPrevious: St.Button | null = null;
 
+    indicatorName = Me.metadata.name.replace(" ", "-");
+    currentPanel: any = null;
+
     enable() {
         log(`Enabling ${Me.metadata.name}`);
 
-        let indicatorName = Me.metadata.name.replace(" ", "-");
-
         this.api = new API.MediaAPI(cmd, load, save, log);
         
-        this.panel = new PanelMenu.Button(0.0, indicatorName, false);
-        this.panel.setSensitive(false);
+        this.widget = new PanelMenu.Button(0.0, this.indicatorName, false);
+        this.widget.setSensitive(false);
 
         this.container = new St.BoxLayout({
             x_expand: true, y_expand: false
         });
-        this.panel.add_child(this.container);
+        this.widget.add_child(this.container);
 
         let buttonMain = new St.Button();
         buttonMain.y_align = Clutter.ActorAlign.CENTER;
@@ -172,7 +174,7 @@ export class Extension {
         });
         this.buttonNext.set_child(icon);
 
-        Main.panel.addToStatusArea(indicatorName, this.panel, 0, "center");
+        this.updateWidgetPosition();
 
         this.bindAPI();
 
@@ -207,16 +209,59 @@ export class Extension {
 
     disable() {
         log(`Disabling ${Me.metadata.name}`);
-        this.panel.destroy();
-        this.panel = null;
+        this.widget.destroy();
+        this.widget = null;
 
         GLib.Source.remove(this.loop);
         this.loop = -1;
     }
 
-    update(): boolean {
+    updateWidgetPosition() {
+        //@ts-expect-error
+        const dtp = global.dashToPanel;
+        if (dtp) {
+            let fallback_panel: any = null;
 
-        log("Update");
+            for (const panel of dtp.panels) {
+                if (panel.monitor.inFullscreen) {
+                    continue;
+                }
+
+                if (panel.monitor.index == Main.layoutManager.primaryMonitor.index) {
+                    this.addWidgetToPanel(panel);
+                    return;
+                }
+                else {
+                    fallback_panel = panel;
+                }
+            }
+
+            if (fallback_panel) {
+                this.addWidgetToPanel(fallback_panel);
+                return;
+            }
+        }
+        else {
+            this.addWidgetToPanel(Main.Panel);
+        }            
+    }
+
+    addWidgetToPanel(panel: any) {
+        if (panel == this.currentPanel) {
+            return;
+        }
+
+        if (this.currentPanel) {
+            this.widget.container.get_parent().remove_child(this.widget.container);
+            delete this.currentPanel.statusArea[this.indicatorName];
+        }
+
+        panel.panel.addToStatusArea(this.indicatorName, this.widget, 0, "center");
+        this.currentPanel = panel;
+    }
+
+    update(): boolean {
+        this.updateWidgetPosition();
         this.api?.update().then(null, (reason: Error) => {
             log(reason.name);
             log(reason.message);
