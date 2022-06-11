@@ -543,8 +543,7 @@ export class Source {
                         break;
                     }
 
-                    const temp = ret;
-                    ret = temp.slice(0, a - 1) + temp.slice(b + pair[1].length, temp.length);
+                    ret = [ret.slice(0, a - 1), ret.slice(b + pair[1].length, ret.length)].join();
                 }
             }
         }
