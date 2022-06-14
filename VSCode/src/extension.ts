@@ -4,10 +4,12 @@ import * as API from "./mediaAPI";
 const child_process = require("child_process");
 const fs = require("fs");
 
+const enableVolumeControl = false;
 const displayNowPlayingNotification = false;
 const volumeStep = 3;
 const statusBarHeight = 50;
-const updateInternal = 0.25 * 1000;
+// const updateInternal = 0.25 * 1000;
+const updateInternal = 5 * 1000;
 
 let api: API.MediaAPI
 
@@ -118,7 +120,7 @@ export async function activate({ subscriptions }: vscode.ExtensionContext) {
 	
 	nextItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, alignment++);
 	nextItem.command = nextCommandId;
-	nextItem.text = ">";
+	nextItem.text = "";
 	nextItem.show();
 	
 	controlItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, alignment++);
@@ -127,7 +129,7 @@ export async function activate({ subscriptions }: vscode.ExtensionContext) {
 	
 	previousItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, alignment++);
 	previousItem.command = previousCommandId;
-	previousItem.text = "<";
+	previousItem.text = "";
 	previousItem.show();
 	
 	mediaItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, alignment++);
@@ -137,13 +139,15 @@ export async function activate({ subscriptions }: vscode.ExtensionContext) {
 	soundBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, alignment++);
 	soundBarItem.show();
 	
-	if (vscode.window.state.focused) {
-		windowPID = await getFocusedWindowPID();
-		scrollEventMonitor = child_process.exec(`xev -id ${windowPID}`);
-		scrollEventMonitor.stdout?.on('data', onScrollMonitorSTDOUT);
-	}
-	else {
-		subscriptions.push(vscode.window.onDidChangeWindowState(onWindowStateChanged));
+	if (enableVolumeControl) {
+		if (vscode.window.state.focused) {
+			windowPID = await getFocusedWindowPID();
+			scrollEventMonitor = child_process.exec(`xev -id ${windowPID}`);
+			scrollEventMonitor.stdout?.on('data', onScrollMonitorSTDOUT);
+		}
+		else {
+			subscriptions.push(vscode.window.onDidChangeWindowState(onWindowStateChanged));
+		}
 	}
 
 	setInterval(mainLoop, updateInternal);
@@ -251,7 +255,7 @@ async function onMediaItemClicked() {
 		return;
 	}
 
-	const artist: string = (await cmd(["playerctl", "metadata", "--format", "'{{ artist }}'", "--player=" + api.current_source.id]))[0];
+	const artist: string = api.current_source.metadata.artist || "Unknown";
 	const actions: Map<string, Function> = new Map();
 	
 	actions.set("Override title", overrideSongTitle);

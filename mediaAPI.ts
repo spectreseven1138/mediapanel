@@ -1,4 +1,8 @@
-export function removePrefix(text: string, prefix: string): string {
+const dbus = require("dbus-next");
+dbus.setBigIntCompat(true);
+const bus = dbus.sessionBus();
+
+function removePrefix(text: string, prefix: string): string {
     if (prefix.length > text.length)
         return text;
     if (text.indexOf(prefix) == 0) {
@@ -17,6 +21,9 @@ export function removeSuffix(text: string, suffix: string): string {
 }
 
 export function replaceAll(text: string, base: string, replacement: string) {
+    if (base.length == 0) {
+        return text;
+    }
     while (text.includes(base)) {
         text = text.replace(base, replacement);
     }
@@ -76,7 +83,7 @@ export class MediaAPI {
         this.beginHide();
     }
 
-    log(msg: string) {
+    async log(msg: string) {
         if (this._log) {
             this._log(msg);
         }
@@ -138,21 +145,27 @@ export class MediaAPI {
 
     async _updateCurrentSource(): Promise<boolean> {
         
-        let new_sources: Source[] = [];
-        const available_sources: string[] = (await this.cmd(["playerctl", "--list-all"]))[0].split("\n");
-        
-        let current_exists = false;
+        let message = new dbus.Message({
+            destination: "org.freedesktop.DBus",
+            path: "/org/freedesktop/DBus",
+            interface: "org.freedesktop.DBus",
+            member: "ListNames"
+        });
 
-        for (let source_id of available_sources) {
-            
-            if (source_id.trim().length == 0) {
+        let reply = await bus.call(message);
+        let available_sources: string[] = [];
+
+        for (let bus of reply.body[0]) {
+            if (!bus.startsWith("org.mpris.MediaPlayer2.")) {
                 continue;
             }
+
+            bus = bus.slice(23, bus.length);
 
             if ("source_blacklist" in this._config) {
                 let blacklisted = false;
                 for (let player of this._config.source_blacklist) {
-                    if (matchRuleShort(source_id, player)) {
+                    if (matchRuleShort(bus, player)) {
                         blacklisted = true;
                         break;
                     }
@@ -160,6 +173,18 @@ export class MediaAPI {
                 if (blacklisted) {
                     continue;
                 }
+            }
+
+            available_sources.push(bus);
+        }
+
+        let new_sources: Source[] = [];
+        let current_exists = false;
+
+        for (let source_id of available_sources) {
+            
+            if (source_id.trim().length == 0) {
+                continue;
             }
 
             let existing_source: Source | null = null;
@@ -242,6 +267,10 @@ export class MediaAPI {
 
         if (this._config == null) {
             await this.loadConfig();
+
+            if (this._config == null) {
+                return false;
+            }
         }
 
         if (this.setVolumeCallback) {
@@ -267,11 +296,11 @@ export class MediaAPI {
         this.current_source.updateMetadata();
 
         if (this.setCanGoNextCallback) {
-            this.setCanGoNextCallback((await this.current_source.interact("Player.CanGoNext"))[0] == "true");
+            this.setCanGoNextCallback(await this.current_source.getProperty("Player", "CanGoNext"));
         }
 
         if (this.setCanGoPreviousCallback) {
-            this.setCanGoPreviousCallback((await this.current_source.interact("Player.CanGoPrevious"))[0] == "true");
+            this.setCanGoPreviousCallback(await this.current_source.getProperty("Player", "CanGoPrevious"));
         }
 
         if (this.setPlayingCallback) {
@@ -307,33 +336,18 @@ export class MediaAPI {
         return changed;
     }
 
-    async mediaForward(player: string | null = this.current_source?.id!) {
-        if (player) {
-            await this.cmd(["playerctl", "next", "--player=" + player]);
-        }
-        else {
-            await this.cmd(["playerctl", "next"]);
-        }
+    async mediaForward() {
+        (await this.current_source?.getPlayerIface()).Next();
         this.update();
     }
 
-    async mediaBackward(player: string | null = this.current_source?.id!) {
-        if (player) {
-            await this.cmd(["playerctl", "previous", "--player=" + player]);
-        }
-        else {
-            await this.cmd(["playerctl", "previous"]);
-        }
+    async mediaBackward() {
+        (await this.current_source?.getPlayerIface()).Previous();
         this.update();
     }
 
-    async mediaPlayPause(player: string | null = this.current_source?.id!) {
-        if (player) {
-            await this.cmd(["playerctl", "play-pause", "--player=" + player]);
-        }
-        else {
-            await this.cmd(["playerctl", "play-pause"]);
-        }
+    async mediaPlayPause() {
+        (await this.current_source?.getPlayerIface()).PlayPause();
         this.update();
     }
 
@@ -357,10 +371,6 @@ export class MediaAPI {
         return this.cmd(["amixer", "set", "Master", `${value}%`]);
     }
 }
-
-const SOURCE_METADATA_LIST_TYPES = [
-    "albumArtist", "artist", "comment", "composer", "genre", "lyricist"
-];
 
 export class Source {
 
@@ -393,24 +403,41 @@ export class Source {
 
     api: MediaAPI;
     id: string;
+
+    properties_iface: any = null;
+    player_iface: any = null;
     
     constructor(api: MediaAPI, id: string) {
         this.api = api;
         this.id = id;
-
-        for (const key of Object.keys(this.metadata)) {
-            if (SOURCE_METADATA_LIST_TYPES.includes(key)) {
-                this.metadata[key] = [];
-            }
-        }
     }
 
-    interact(key: string): Promise<[string, boolean]> {
-        return this.api.cmd(["qdbus", "org.mpris.MediaPlayer2." + this.id, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2." + key], false);
+    async getPropertiesIface(): Promise<any> {
+        if (this.properties_iface == null) {
+            const obj = await bus.getProxyObject("org.mpris.MediaPlayer2." + this.id, "/org/mpris/MediaPlayer2");
+            this.properties_iface = obj.getInterface("org.freedesktop.DBus.Properties")
+        }
+        return this.properties_iface;
+    }
+
+    async getPlayerIface(): Promise<any> {
+        if (this.player_iface == null) {
+            const obj = await bus.getProxyObject("org.mpris.MediaPlayer2." + this.id, "/org/mpris/MediaPlayer2");
+            this.player_iface = obj.getInterface("org.mpris.MediaPlayer2.Player")
+        }
+        return this.player_iface;
+    }
+
+    async getProperty(iface: string, key: string): Promise<any> {
+        if (iface != "") {
+            iface = "." + iface;
+        }
+        const properties = await this.getPropertiesIface();
+        return (await properties.Get("org.mpris.MediaPlayer2" + iface, key)).value;
     }
 
     async getStatus(): Promise<number> {
-        switch ((await this.interact("Player.PlaybackStatus"))[0].trim()) {
+        switch (await this.getProperty("Player", "PlaybackStatus")) {
             case "Playing": return 2;
             case "Paused": return 1;
             default: return 0;
@@ -421,34 +448,15 @@ export class Source {
         this.last_activity = getCurrentTime();
     }
 
-    async updateMetadata(metadata: string | null = null) {
-
-        if (metadata == null) {
-            metadata = (await this.api.cmd(["playerctl", "metadata", "--player=" + this.id]))[0];
-        }
-
-        const source_data: string[] = (metadata).split("\n");
-        for (let line of source_data){
-            line = line.slice(this.id.length + 1, line.length).trim();
-            if (line.length == 0) {
-                continue;
-            }
-            
-            let key: string = line.split(" ", 2)[0];
-            const value: string = line.slice(key.length, line.length).trim();
-            key = key.split(":")[1];
-
-            if (!(key in this.metadata)) {
+    async updateMetadata() {
+        const metadata: any = await this.getProperty("Player", "Metadata");
+        for (let key of Object.keys(metadata)){
+            const formatted_key = key.split(":", 2)[1];
+            if (!(formatted_key in this.metadata)) {
                 console.log("Unknown metadata key: " + key)
                 continue;
             }
-
-            if (SOURCE_METADATA_LIST_TYPES.includes(key)) {
-                this.metadata[key].push(value);
-            }
-            else {
-                this.metadata[key] = value;
-            }
+            this.metadata[formatted_key] = metadata[key]["value"];
         }
     }
 
@@ -461,9 +469,10 @@ export class Source {
     }
 
     async formatTitle(api: MediaAPI) {
-        if (this.id == "vlc" && this.metadata.title == "audio stream" && "dlna_command" in api._config) {
 
-            let url: string = (await api.cmd(["playerctl", "metadata", "--format", "\"{{ xeasam:url }}\""]))[0];
+        const url: string = this.metadata["url"];
+
+        if (this.id == "vlc" && url != null && this.metadata.title == "audio stream" && "dlna_command" in api._config) {
 
             if (url in api.vlc_dlna_cache) {
                 this.metadata.title = api.vlc_dlna_cache[url];
@@ -543,7 +552,8 @@ export class Source {
                         break;
                     }
 
-                    ret = [ret.slice(0, a - 1), ret.slice(b + pair[1].length, ret.length)].join();
+                    const temp = ret;
+                    ret = temp.slice(0, a - 1) + temp.slice(b + pair[1].length, temp.length);
                 }
             }
         }
@@ -560,13 +570,7 @@ export class Source {
     static async create(source_id: string, api: MediaAPI): Promise<Source | null> {
 
         let source: Source = new Source(api, source_id);
-
-        const metadata: string = (await api.cmd(["playerctl", "metadata", "--player=" + source_id], false))[0];
-        if (metadata == "No player could handle this command") {
-            return null;
-        }
-        
-        await source.updateMetadata(metadata);
+        await source.updateMetadata();
 
         if ("artist_blacklist" in api._config) {
             for (const artist of source.metadata.artist) {
