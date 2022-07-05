@@ -564,6 +564,10 @@ export class Source {
             }
         }
 
+        if (this.metadata.artist != null) {
+            ret = this.metadata.artist + " | " + ret;
+        }
+
         return ret.trim();
     }
 
@@ -572,7 +576,7 @@ export class Source {
         let source: Source = new Source(api, source_id);
         await source.updateMetadata();
 
-        if ("artist_blacklist" in api._config) {
+        if ("artist_blacklist" in api._config && source.metadata.artist != null) {
             for (const artist of source.metadata.artist) {
                 for (const blacklisted_artist of api._config.artist_blacklist) {
                     if (matchRuleShort(artist, blacklisted_artist)) {

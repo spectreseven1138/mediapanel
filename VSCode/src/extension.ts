@@ -1,17 +1,13 @@
 import * as vscode from 'vscode';
-import * as API from "./mediaAPI";
-
 const child_process = require("child_process");
-const fs = require("fs");
 
 const enableVolumeControl = false;
 const displayNowPlayingNotification = false;
 const volumeStep = 3;
 const statusBarHeight = 50;
-// const updateInternal = 0.25 * 1000;
-const updateInternal = 5 * 1000;
+const updateInterval = 1 * 1000;
 
-let api: API.MediaAPI
+let api_data: any = null;
 
 let mediaItem: vscode.StatusBarItem;
 let volumeItem: vscode.StatusBarItem;
@@ -27,76 +23,53 @@ let scrollEventMonitor: any = null;
 
 const notify = vscode.window.showInformationMessage;
 
+async function apiCall(command: string): Promise<string> {
+	return cmd("mediaAPI client " + command);
+}
+
+const setVisibleCallback = (visible: boolean) => {
+	if (visible) {
+		mediaItem.show();
+		controlItem.show();
+		nextItem.show();
+		previousItem.show();
+	}
+	else {
+		mediaItem.hide();
+		controlItem.hide();
+		nextItem.hide();
+		previousItem.hide();
+	}
+}
+
+const setCanGoNextCallback = (can_go: boolean) => {
+	nextItem.text = can_go ? ">" : "";
+}
+
+const setCanGoPreviousCallback = (can_go: boolean) => {
+	previousItem.text = can_go ? "<" : "";
+}
+
+const setTitleCallback = (title: string) => {
+	mediaItem.text = title;
+}
+
+const setVolumeCallback = (volume: number, muted: boolean) => {
+	if (muted) {
+		volumeItem.text = `$(mute) Muted`;
+	}
+	else {
+		const icon = volume === 0 ? "mute" : "unmute";
+		volumeItem.text = `$(${icon})  ${volume}%`;
+	}
+}
+
+const setPlayingCallback = (playing: boolean) => {
+	controlItem.text = `$(${playing ? "debug-pause" : "play"})`;
+}
+
 export async function activate({ subscriptions }: vscode.ExtensionContext) {
 	
-	function loadFile(path: string): Promise<string> {
-		path = process.env.HOME + path;
-		return new Promise((resolve, reject) => {
-			fs.exists(path, (exists: boolean) => {
-				if (exists) {
-					fs.readFile(path, {encoding:'utf8', flag:'r'}, (err: any, data: any) =>  {
-						if (err) {
-							reject(err);
-						}
-						resolve(data);
-					})
-				}
-				else {
-					reject(Error(`No file exists at path ${path}`));
-				}
-			})
-		})
-	}
-
-	function saveFile(path: string, content: string): void {
-		fs.writeFileSync(process.env.HOME + path, content, "utf8");
-	}
-
-	api = new API.MediaAPI(cmd, loadFile, saveFile, null);
-
-	api.setVisibleCallback = (visible: boolean) => {
-		if (visible) {
-			mediaItem.show();
-			controlItem.show();
-			nextItem.show();
-			previousItem.show();
-		}
-		else {
-			mediaItem.hide();
-			controlItem.hide();
-			nextItem.hide();
-			previousItem.hide();
-		}
-	}
-
-	api.setCanGoNextCallback = (can_go: boolean) => {
-		nextItem.text = can_go ? ">" : "";
-	}
-
-	api.setCanGoPreviousCallback = (can_go: boolean) => {
-		previousItem.text = can_go ? "<" : "";
-	}
-
-	api.setTitleCallback = (title: string) => {
-		mediaItem.text = title;
-	}
-
-	api.setVolumeCallback = (volume: number, muted: boolean) => {
-		if (muted) {
-			volumeItem.text = `$(mute) Muted`;
-		}
-		else {
-			const icon = volume === 0 ? "mute" : "unmute";
-			volumeItem.text = `$(${icon})  ${volume}%`;
-		}
-	}
-
-	api.setPlayingCallback = (playing: boolean) => {
-		controlItem.text = `$(${playing ? "debug-pause" : "play"})`;
-	}
-
-	api._log = notify;
-
 	const mediaCommandId = "mediaItem.mediaClicked"
 	subscriptions.push(vscode.commands.registerCommand(mediaCommandId, onMediaItemClicked));
 
@@ -150,7 +123,7 @@ export async function activate({ subscriptions }: vscode.ExtensionContext) {
 		}
 	}
 
-	setInterval(mainLoop, updateInternal);
+	setInterval(mainLoop, updateInterval);
 }
 
 export function deactivate() {
@@ -161,19 +134,13 @@ function mainLoop() {
 	updateItems();
 }
 
-function cmd(args: string[], raise_error: boolean = true): Promise<[string, boolean]> {
+function cmd(command: string): Promise<string> {
 	return new Promise((resolve) => {
-		child_process.exec(args.join(" "), (error: Error, stdout: string | Buffer, stderr: string | Buffer) => {
+		child_process.exec(command, (error: Error, stdout: string | Buffer) => {
 			if (error) {
-				if (raise_error) {
-					throw EvalError(stderr.toString().trim());
-				}
-				else {
-					resolve([stderr.toString().trim(), false]);
-				}
+				throw error;
 			}
-
-			resolve([stdout.toString().trim(), true]);
+			resolve(stdout.toString().trim());
 		});
 	});
 }
@@ -208,7 +175,7 @@ async function onScrollMonitorSTDOUT(data: string) {
 	}
 
 	// Get window geometry and mouse position data from xdotool
-	const windowData = (await cmd(["xdotool", "getwindowgeometry", "--shell", windowPID, "getmouselocation", "--shell"]))[0].split("\n");
+	const windowData = (await cmd(`xdotool getwidowgeometry --shell ${windowPID} getmouselocation --shell`)).split("\n");
 	
 	// Check if the mouse is inside the statusbar
 	const windowY = Number(windowData[2].slice(2));
@@ -227,114 +194,124 @@ async function onScrollMonitorSTDOUT(data: string) {
 		return;
 	}
 
-	// Get the current volume level
-	let [volume] = await api.getVolumeData(volumeStep * (up ? 1 : -1));
+	// TODO
+	return;
 
-	// Apply increased / decreased volume
-	await cmd(["amixer", "set", "Master" ,`${volume}%`]);
+	// // Get the current volume level
+	// let [volume] = await api.getVolumeData(volumeStep * (up ? 1 : -1));
+
+	// // Apply increased / decreased volume
+	// await cmd(`amixer set Master ${volume}%`);
 	
-	const icon = volume == 0 ? "mute" : "unmute";
-	volumeItem.text = `$(${icon})  ${volume}%`;
+	// const icon = volume == 0 ? "mute" : "unmute";
+	// volumeItem.text = `$(${icon})  ${volume}%`;
 }
 
 async function updateItems() {
-	let changed = await api.update();
-	if (changed) {
-		if (skipNotification) {
-			skipNotification = false;
-		}
-		else if (displayNowPlayingNotification && api.current_source) {
-			notify("Now playing: " + api.current_source.metadata.title);
-		}
+
+	api_data = JSON.parse(await apiCall("getinfo"));
+
+    setVisibleCallback(api_data.visible);
+    setCanGoNextCallback(api_data.can_go_next);
+    setCanGoPreviousCallback(api_data.can_go_previous);
+    setTitleCallback(api_data.title);
+    setVolumeCallback(api_data.volume, api_data.muted);
+    setPlayingCallback(api_data.playing);
+
+	if (skipNotification) {
+		skipNotification = false;
+	}
+	else if (displayNowPlayingNotification && api_data.visible) {
+		notify("Now playing: " + api_data.title);
 	}
 }
 
 async function onMediaItemClicked() {
 	
-	if (api.current_source == null) {
+	if (!api_data.visible) {
 		return;
 	}
 
-	const artist: string = api.current_source.metadata.artist || "Unknown";
+	const artist: string = api_data.metadata.artist[0] || "Unknown";
 	const actions: Map<string, Function> = new Map();
 	
-	actions.set("Override title", overrideSongTitle);
+	// actions.set("Override title", overrideSongTitle);
 
 	// TODO Move to API
-	if ("title_replacements" in api._config && api.current_source.metadata.title in api._config.title_replacements) {
-		actions.set("Clear title override", () => {
-			if ("title_replacements" in api._config && api.current_source && api.current_source.metadata.title in api._config.title_replacements) {
-				delete api._config.title_replacements[api.current_source.metadata.title];
-			}
-			api.saveConfig();
-			api.onConfigChanged();
-		});
-	}
+	// if ("title_replacements" in api._config && api.current_source.metadata.title in api._config.title_replacements) {
+	// 	actions.set("Clear title override", () => {
+	// 		if ("title_replacements" in api._config && api.current_source && api.current_source.metadata.title in api._config.title_replacements) {
+	// 			delete api._config.title_replacements[api.current_source.metadata.title];
+	// 		}
+	// 		api.saveConfig();
+	// 		api.onConfigChanged();
+	// 	});
+	// }
 
-	actions.set("Blacklist player", () => {
-		if (!("player_blacklist" in api._config)) {
-			api._config.player_blacklist = [];
-		}
-		api._config.player_blacklist.push(api.current_source?.id);
-		api.saveConfig();
-		api.onConfigChanged();
-	});
+	// actions.set("Blacklist player", () => {
+	// 	if (!("player_blacklist" in api._config)) {
+	// 		api._config.player_blacklist = [];
+	// 	}
+	// 	api._config.player_blacklist.push(api.current_source?.id);
+	// 	api.saveConfig();
+	// 	api.onConfigChanged();
+	// });
 
-	actions.set("Blacklist artist", () => {
-		if (!("artist_blacklist" in api._config)) {
-			api._config.artist_blacklist = [];
-		}
-		api._config.artist_blacklist.push(artist);
-		api.saveConfig();
-		api.onConfigChanged();
-	});
+	// actions.set("Blacklist artist", () => {
+	// 	if (!("artist_blacklist" in api._config)) {
+	// 		api._config.artist_blacklist = [];
+	// 	}
+	// 	api._config.artist_blacklist.push(artist);
+	// 	api.saveConfig();
+	// 	api.onConfigChanged();
+	// });
 
-	actions.set("Blacklist keyword", () => {
-		vscode.window.showInputBox({
-			placeHolder: "Input the keyword to blacklist"
-		}).then((input: any) => {
-			if (input === undefined) {
-				return;
-			}
+	// actions.set("Blacklist keyword", () => {
+	// 	vscode.window.showInputBox({
+	// 		placeHolder: "Input the keyword to blacklist"
+	// 	}).then((input: any) => {
+	// 		if (input === undefined) {
+	// 			return;
+	// 		}
 			
-			if (!("keyword_blacklist" in api._config)) {
-				api._config.keyword_blacklist = [input];
-			}
-			else {
-				api._config.keyword_blacklist.push(input);
-			}
+	// 		if (!("keyword_blacklist" in api._config)) {
+	// 			api._config.keyword_blacklist = [input];
+	// 		}
+	// 		else {
+	// 			api._config.keyword_blacklist.push(input);
+	// 		}
 	
-			api.saveConfig()
-			api.onConfigChanged();
-		})
-	});
+	// 		api.saveConfig()
+	// 		api.onConfigChanged();
+	// 	})
+	// });
 	
 	actions.set("Reload config", () => {
-		api.loadConfig();
+		apiCall("reloadconfig");
 	})
 	
 	actions.set("Open config", async () => {
-		const openPath = vscode.Uri.file(process.env.HOME + api.getConfigPath());
+		const openPath = vscode.Uri.file(await cmd("mediaAPI config_path"));
 		vscode.workspace.openTextDocument(openPath).then((doc: any) => {
 			vscode.window.showTextDocument(doc);
 		});
 	})
 
-	actions.set("List sources", () => {
-		let detail: string = "";
-		api.sources.forEach((source: API.Source) => {
-			detail += "\n\n" + source.toString(api);
-		})
-		notify("Detected sources (excluding blacklisted):", {modal:true, detail: detail});
-	})
+	// actions.set("List sources", () => {
+	// 	let detail: string = "";
+	// 	api.sources.forEach((source: API.Source) => {
+	// 		detail += "\n\n" + source.toString(api);
+	// 	})
+	// 	notify("Detected sources (excluding blacklisted):", {modal:true, detail: detail});
+	// })
 
 	let detail: string =
 		"Artist: " + artist
-		+ "\n" + "Player: " + api.current_source.id
-		+ "\n" + "Original title: " + api.current_source.metadata.title;
+		// + "\n" + "Player: " + api_data.
+		// + "\n" + "Original title: " + api.current_source.metadata.title;
 	
 	notify(
-		api.current_source.getReadableTitle(api) + "\n", {modal: true, detail: detail}, 
+		api_data.title + "\n", {modal: true, detail: detail}, 
 		...Array.from(actions.keys()).reverse()).then((action: any) => {
 		actions.get(action!)!();
 	});
@@ -342,67 +319,66 @@ async function onMediaItemClicked() {
 
 function overrideSongTitle(): void {
 
-	if (api.current_source == null) {
+	if (!api_data.visible) {
 		return;
 	}
 
-	vscode.window.showInputBox({
-		placeHolder: "Input the title to replace '" + api.current_source.metadata.title + "'",
-		value: api.current_source.metadata.title
-	}).then((input: any) => {
-		if (input === undefined || api.current_source == null) {
-			return;
-		}
+	// vscode.window.showInputBox({
+	// 	placeHolder: "Input the title to replace '" + api.current_source.metadata.title + "'",
+	// 	value: api.current_source.metadata.title
+	// }).then((input: any) => {
+	// 	if (input === undefined || api.current_source == null) {
+	// 		return;
+	// 	}
 		
-		if (!("title_replacements" in api._config)) {
-			api._config.title_replacements = {};
-		}
+	// 	if (!("title_replacements" in api._config)) {
+	// 		api._config.title_replacements = {};
+	// 	}
 
-		api._config.title_replacements[api.current_source.metadata.title] = input;
-		api.saveConfig()
-		api.onConfigChanged();
-	})
+	// 	api._config.title_replacements[api.current_source.metadata.title] = input;
+	// 	api.saveConfig()
+	// 	api.onConfigChanged();
+	// })
 }
 
 async function onVolumeItemClicked() {
-	const [volume] = await api.getVolumeData();
-	let target: number = -1;
+	// let target: number = -1;
 	
-	if (volume == 0) {
-		if (unmutedVolume != 0) {
-			target = unmutedVolume;
-		}
-	}
-	else {
-		target = 0;
-		unmutedVolume = Number(volume);
-	}
+	// if (api_data.volume == 0) {
+	// 	if (unmutedVolume != 0) {
+	// 		target = unmutedVolume;
+	// 	}
+	// }
+	// else {
+	// 	target = 0;
+	// 	unmutedVolume = Number(api_data.volume);
+	// }
 	
-	if (target >= 0) {
-		await api.setVolume(target);
-	}
+	// if (target >= 0) {
+	// 	await api.setVolume(target);
+	// }
 	
-	const icon = target == 0 ? "mute" : "unmute";
-	volumeItem.text = `$(${icon})  ${target}%`;
+	// const icon = target == 0 ? "mute" : "unmute";
+	// volumeItem.text = `$(${icon})  ${target}%`;
 }
 
 async function onControlItemClicked() {
-	await api.mediaPlayPause();
+	await apiCall("playpause");
 	updateItems();
 }
 
 async function onNextItemClicked() {
-	await api.mediaForward();
+	await apiCall("next");
 	skipNotification = true;
 	updateItems();
 }
 
 async function onPreviousItemClicked() {
-	await api.mediaBackward();
+	await apiCall("previous");
 	skipNotification = true;
 	updateItems();
 }
 
 async function getFocusedWindowPID(): Promise<string> {
-	return (await cmd(["xdotool", "getwindowfocus"]))[0];
+	return await cmd("xdotool getwindowfocus");
 }
